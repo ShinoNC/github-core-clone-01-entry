@@ -25,12 +25,32 @@ import {
   RECEIVE_PACK_RESULT_TYPE,
 } from './git/receive-pack.ts';
 import {
+  createGitRef,
   createUserRepo,
+  deleteContents,
   deleteRepoByOwnerName,
+  getContents,
   getCurrentUser,
+  getGitRef,
   getRepoByOwnerName,
+  listBranches,
+  listCommits,
+  listUserRepos,
+  patchRepoByOwnerName,
+  putContents,
+  visibleRepo,
   type RestResult,
 } from './rest/repos.ts';
+import {
+  createComment,
+  createIssue,
+  createLabel,
+  getIssue,
+  listComments,
+  listIssues,
+  listLabels,
+  patchIssue,
+} from './rest/issues.ts';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 /** The largest request body accepted (packs in the suite are far below this). */
@@ -110,7 +130,33 @@ function isAuthorized(req: IncomingMessage): boolean {
 }
 
 const GIT_PATH = /^\/([^/]+)\/([^/]+)\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/;
-const REPO_PATH = /^\/api\/v3\/repos\/([^/]+)\/([^/]+)$/;
+
+/** The installed version GET /api/v3/meta reports. */
+const INSTALLED_VERSION = '1.0.0';
+
+/** Decode one path segment; a malformed escape is null (the caller answers 400). */
+function decodeSegment(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+}
+
+/** Read and parse a JSON request body; an empty body is {} and malformed JSON is an error. */
+async function readJsonBody(req: IncomingMessage): Promise<{ ok: true; value: unknown } | { ok: false }> {
+  try {
+    return { ok: true, value: parseJsonBody(await readBody(req)) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/** The request's own origin, for absolute pagination URLs (Link rel="next"). */
+function requestBaseUrl(req: IncomingMessage): string {
+  const host = req.headers.host ?? '127.0.0.1';
+  return `http://${host}`;
+}
 
 /** Handle a git smart-HTTP request. */
 async function handleGit(
@@ -197,30 +243,195 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendJson(res, 401, { message: 'Bad credentials' });
       return;
     }
-    if (method === 'GET' && path === '/api/v3/user') {
+    const rawSegments = path.split('/').filter((segment) => segment !== '');
+    const segments: string[] = [];
+    for (const segment of rawSegments) {
+      const decoded = decodeSegment(segment);
+      if (decoded === null) {
+        sendJson(res, 400, { message: 'malformed path encoding' });
+        return;
+      }
+      segments.push(decoded);
+    }
+    // segments[0..1] are 'api' and 'v3' (path is under /api/v3).
+    const tail = segments.slice(2);
+
+    if (method === 'GET' && tail.length === 1 && tail[0] === 'meta') {
+      sendJson(res, 200, { installed_version: INSTALLED_VERSION });
+      return;
+    }
+    if (method === 'GET' && tail.length === 1 && tail[0] === 'user') {
       sendRest(res, getCurrentUser());
       return;
     }
-    if (method === 'POST' && path === '/api/v3/user/repos') {
-      let body: unknown;
-      try {
-        body = parseJsonBody(await readBody(req));
-      } catch {
-        sendJson(res, 400, { message: 'malformed JSON body' });
-        return;
-      }
-      sendRest(res, createUserRepo(body));
-      return;
-    }
-    const repoMatch = REPO_PATH.exec(path);
-    if (repoMatch) {
+    if (tail.length === 2 && tail[0] === 'user' && tail[1] === 'repos') {
       if (method === 'GET') {
-        sendRest(res, getRepoByOwnerName(repoMatch[1]!, repoMatch[2]!));
+        sendRest(res, listUserRepos(query, requestBaseUrl(req)));
         return;
       }
-      if (method === 'DELETE') {
-        sendRest(res, deleteRepoByOwnerName(repoMatch[1]!, repoMatch[2]!));
+      if (method === 'POST') {
+        const body = await readJsonBody(req);
+        if (!body.ok) {
+          sendJson(res, 400, { message: 'malformed JSON body' });
+          return;
+        }
+        sendRest(res, createUserRepo(body.value));
         return;
+      }
+    }
+
+    // /api/v3/repos/{owner}/{name}[/...]
+    if (tail.length >= 3 && tail[0] === 'repos') {
+      const owner = tail[1]!;
+      const name = tail[2]!;
+      const rest = tail.slice(3);
+
+      if (rest.length === 0) {
+        if (method === 'GET') {
+          sendRest(res, getRepoByOwnerName(owner, name));
+          return;
+        }
+        if (method === 'PATCH') {
+          const body = await readJsonBody(req);
+          if (!body.ok) {
+            sendJson(res, 400, { message: 'malformed JSON body' });
+            return;
+          }
+          sendRest(res, patchRepoByOwnerName(owner, name, body.value));
+          return;
+        }
+        if (method === 'DELETE') {
+          sendRest(res, deleteRepoByOwnerName(owner, name));
+          return;
+        }
+      }
+
+      const repo = visibleRepo(owner, name);
+      if (!repo) {
+        sendJson(res, 404, { message: 'Not Found' });
+        return;
+      }
+
+      // POST /git/refs, GET /git/refs/{ref...}
+      if (rest.length >= 2 && rest[0] === 'git' && rest[1] === 'refs') {
+        if (method === 'POST' && rest.length === 2) {
+          const body = await readJsonBody(req);
+          if (!body.ok) {
+            sendJson(res, 400, { message: 'malformed JSON body' });
+            return;
+          }
+          sendRest(res, createGitRef(repo, body.value));
+          return;
+        }
+        if (method === 'GET' && rest.length > 2) {
+          sendRest(res, getGitRef(repo, rest.slice(2).join('/')));
+          return;
+        }
+      }
+
+      if (method === 'GET' && rest.length === 1 && rest[0] === 'branches') {
+        sendRest(res, listBranches(repo));
+        return;
+      }
+      if (method === 'GET' && rest.length === 1 && rest[0] === 'commits') {
+        sendRest(res, listCommits(repo, query));
+        return;
+      }
+
+      // /contents[/{path...}] — the path may hold slashes.
+      if (rest.length >= 1 && rest[0] === 'contents') {
+        const contentPath = rest.slice(1).join('/');
+        if (method === 'GET') {
+          sendRest(res, getContents(repo, contentPath, query));
+          return;
+        }
+        if (method === 'PUT') {
+          const body = await readJsonBody(req);
+          if (!body.ok) {
+            sendJson(res, 400, { message: 'malformed JSON body' });
+            return;
+          }
+          sendRest(res, putContents(repo, contentPath, body.value));
+          return;
+        }
+        if (method === 'DELETE') {
+          const body = await readJsonBody(req);
+          if (!body.ok) {
+            sendJson(res, 400, { message: 'malformed JSON body' });
+            return;
+          }
+          sendRest(res, deleteContents(repo, contentPath, body.value));
+          return;
+        }
+      }
+
+      // /labels
+      if (rest.length === 1 && rest[0] === 'labels') {
+        if (method === 'POST') {
+          const body = await readJsonBody(req);
+          if (!body.ok) {
+            sendJson(res, 400, { message: 'malformed JSON body' });
+            return;
+          }
+          sendRest(res, createLabel(repo, body.value));
+          return;
+        }
+        if (method === 'GET') {
+          sendRest(res, listLabels(repo));
+          return;
+        }
+      }
+
+      // /issues[/{n}[/comments]]
+      if (rest.length >= 1 && rest[0] === 'issues') {
+        if (rest.length === 1) {
+          if (method === 'POST') {
+            const body = await readJsonBody(req);
+            if (!body.ok) {
+              sendJson(res, 400, { message: 'malformed JSON body' });
+              return;
+            }
+            sendRest(res, createIssue(repo, body.value));
+            return;
+          }
+          if (method === 'GET') {
+            sendRest(res, listIssues(repo, query, requestBaseUrl(req)));
+            return;
+          }
+        }
+        const number = Number(rest[1]);
+        if (rest.length >= 2 && Number.isInteger(number) && number >= 1) {
+          if (rest.length === 2) {
+            if (method === 'GET') {
+              sendRest(res, getIssue(repo, number));
+              return;
+            }
+            if (method === 'PATCH') {
+              const body = await readJsonBody(req);
+              if (!body.ok) {
+                sendJson(res, 400, { message: 'malformed JSON body' });
+                return;
+              }
+              sendRest(res, patchIssue(repo, number, body.value));
+              return;
+            }
+          }
+          if (rest.length === 3 && rest[2] === 'comments') {
+            if (method === 'POST') {
+              const body = await readJsonBody(req);
+              if (!body.ok) {
+                sendJson(res, 400, { message: 'malformed JSON body' });
+                return;
+              }
+              sendRest(res, createComment(repo, number, body.value));
+              return;
+            }
+            if (method === 'GET') {
+              sendRest(res, listComments(repo, number));
+              return;
+            }
+          }
+        }
       }
     }
     sendJson(res, 404, { message: 'Not Found' });

@@ -128,6 +128,8 @@ export interface Repo {
   issueCounter: number;
   readonly pulls: Map<number, PullRequest>;
   pullCounter: number;
+  /** Issues and pull requests share one numbering sequence, as on real GitHub. */
+  numberCounter: number;
   readonly labels: Map<string, Label>;
   commentCounter: number;
 }
@@ -155,6 +157,7 @@ function newRepo(name: string, owner: string, options: { description?: string; p
     issueCounter: 0,
     pulls: new Map(),
     pullCounter: 0,
+    numberCounter: 0,
     labels: new Map(),
     commentCounter: 0,
   };
