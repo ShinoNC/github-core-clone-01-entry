@@ -110,9 +110,10 @@ export function listDirectory(repo: Repo, treeOid: string, segments: readonly st
 /**
  * Set `segments` to the blob `blobOid` in the tree `treeOid`, creating intermediate directories
  * and storing every new tree object; returns the new root tree id. An existing entry at the path
- * (file or directory) is replaced.
+ * (file or directory) is replaced. Exported for the squash merge (git/merge.ts), which applies a
+ * head-side diff onto the base tip's tree.
  */
-function setPathInTree(repo: Repo, treeOid: string, segments: readonly string[], blobOid: string): string {
+export function setPathInTree(repo: Repo, treeOid: string, segments: readonly string[], blobOid: string): string {
   const [head, ...tail] = segments as [string, ...string[]];
   const entries = treeEntries(repo, treeOid);
   const next: TreeEntry[] = [];
@@ -143,8 +144,9 @@ function setPathInTree(repo: Repo, treeOid: string, segments: readonly string[],
 /**
  * Remove `segments` from the tree `treeOid`, pruning directories left empty; returns the new root
  * tree id (the empty tree when nothing remains). Removing a missing path leaves the tree unchanged.
+ * Exported for the squash merge (git/merge.ts).
  */
-function removePathFromTree(repo: Repo, treeOid: string, segments: readonly string[]): string {
+export function removePathFromTree(repo: Repo, treeOid: string, segments: readonly string[]): string {
   const [head, ...tail] = segments as [string, ...string[]];
   const entries = treeEntries(repo, treeOid);
   const next: TreeEntry[] = [];

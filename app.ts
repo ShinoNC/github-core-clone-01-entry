@@ -51,6 +51,7 @@ import {
   listLabels,
   patchIssue,
 } from './rest/issues.ts';
+import { createPull, getPull, listPullFiles, listPulls, mergePull } from './rest/pulls.ts';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 /** The largest request body accepted (packs in the suite are far below this). */
@@ -430,6 +431,45 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
               sendRest(res, listComments(repo, number));
               return;
             }
+          }
+        }
+      }
+
+      // /pulls[/{n}[/files|merge]]
+      if (rest.length >= 1 && rest[0] === 'pulls') {
+        if (rest.length === 1) {
+          if (method === 'POST') {
+            const body = await readJsonBody(req);
+            if (!body.ok) {
+              sendJson(res, 400, { message: 'malformed JSON body' });
+              return;
+            }
+            sendRest(res, createPull(repo, body.value));
+            return;
+          }
+          if (method === 'GET') {
+            sendRest(res, listPulls(repo, query, requestBaseUrl(req)));
+            return;
+          }
+        }
+        const number = Number(rest[1]);
+        if (rest.length >= 2 && Number.isInteger(number) && number >= 1) {
+          if (rest.length === 2 && method === 'GET') {
+            sendRest(res, getPull(repo, number));
+            return;
+          }
+          if (rest.length === 3 && rest[2] === 'files' && method === 'GET') {
+            sendRest(res, listPullFiles(repo, number));
+            return;
+          }
+          if (rest.length === 3 && rest[2] === 'merge' && method === 'PUT') {
+            const body = await readJsonBody(req);
+            if (!body.ok) {
+              sendJson(res, 400, { message: 'malformed JSON body' });
+              return;
+            }
+            sendRest(res, mergePull(repo, number));
+            return;
           }
         }
       }
