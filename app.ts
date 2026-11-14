@@ -1,7 +1,7 @@
-// The HTTP server: one router for git smart HTTP, REST v3, and GraphQL v4 (MCP joins in a
-// later phase). Every handler is wrapped so a malformed request can never crash the process
-// (repo-survives-errors), every response carries a deterministic X-GitHub-Request-Id, and every
-// error body is JSON {message: string}.
+// The HTTP server: one router for git smart HTTP, REST v3, GraphQL v4, and MCP. Every handler
+// is wrapped so a malformed request can never crash the process (repo-survives-errors), every
+// response carries a deterministic X-GitHub-Request-Id, and every error body is JSON
+// {message: string} (or a JSON-RPC error object on /mcp).
 //
 // Auth: /api/v3/* requires `Authorization: Bearer <MAKEFUN_SHOP_TOKEN>` (missing or wrong -> 401).
 // Git endpoints are NOT auth-gated — the suite client sends a token there too, but no check
@@ -53,6 +53,7 @@ import {
 } from './rest/issues.ts';
 import { createPull, getPull, listPullFiles, listPulls, mergePull } from './rest/pulls.ts';
 import { handleGraphQL } from './graphql/executor.ts';
+import { MCP_PROTOCOL_VERSION, handleMcp, parseErrorBody } from './mcp/server.ts';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 /** The largest request body accepted (packs in the suite are far below this). */
@@ -258,6 +259,36 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     }
     const result = handleGraphQL(body.value);
     sendJson(res, result.status, result.body);
+    return;
+  }
+
+  // MCP: POST /mcp, auth-gated like REST. JSON-RPC 2.0 over Streamable HTTP, answered as
+  // plain JSON. A body that is not JSON is HTTP 400 with JSON-RPC -32700; a notification
+  // (no id) is answered 202 with no body; everything else rides in the JSON-RPC response.
+  if (path === '/mcp') {
+    if (method !== 'POST') {
+      sendJson(res, 405, { message: 'Method Not Allowed' });
+      return;
+    }
+    if (!isAuthorized(req)) {
+      sendJson(res, 401, { message: 'Bad credentials' });
+      return;
+    }
+    const body = await readJsonBody(req);
+    if (!body.ok) {
+      sendJson(res, 400, parseErrorBody(), { 'mcp-protocol-version': MCP_PROTOCOL_VERSION });
+      return;
+    }
+    const result = handleMcp(body.value);
+    if (result.body === null) {
+      res.writeHead(202, {
+        'x-github-request-id': nextRequestId(),
+        'mcp-protocol-version': MCP_PROTOCOL_VERSION,
+      });
+      res.end();
+      return;
+    }
+    sendJson(res, result.status, result.body, { 'mcp-protocol-version': MCP_PROTOCOL_VERSION });
     return;
   }
 
