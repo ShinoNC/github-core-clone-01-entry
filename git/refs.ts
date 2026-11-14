@@ -43,6 +43,11 @@ export function headTarget(repo: Repo): { oid: string; name: string } | null {
  * after their ref line.
  */
 export function buildV0Advertisement(repo: Repo, service: 'git-upload-pack' | 'git-receive-pack', capabilities: string): Buffer {
+  // The advertisement reads only the refs (+ tag peels, which are immutable once the tag
+  // object exists) — refsVersion + objects.size pin its inputs exactly.
+  const cacheKey = `${service}|${repo.refsVersion}|${repo.objects.size}`;
+  const cached = repo.advertisementCache.get(cacheKey);
+  if (cached) return cached;
   const parts: Buffer[] = [encodePktLines([`# service=${service}\n`, 'flush'])];
   const head = headTarget(repo);
   const refs = listRefs(repo);
@@ -66,7 +71,9 @@ export function buildV0Advertisement(repo: Repo, service: 'git-upload-pack' | 'g
     }
   }
   parts.push(encodePktLines([...lines, 'flush']));
-  return Buffer.concat(parts);
+  const response = Buffer.concat(parts);
+  repo.advertisementCache.set(cacheKey, response);
+  return response;
 }
 
 /** True when the repo has no refs at all. */

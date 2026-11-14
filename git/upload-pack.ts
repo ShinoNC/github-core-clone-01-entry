@@ -34,16 +34,21 @@ const V0_CAPABILITIES = `symref=HEAD:refs/heads/main side-band-64k thin-pack ofs
 /** The largest pack-data chunk in one sideband packet (65520 total − 4 header − 1 band byte). */
 const SIDEBAND_CHUNK = 65515;
 
-/** The v2 capability advertisement. `fetch=shallow` is required; `filter` is NOT advertised. */
+/**
+ * The v2 capability advertisement. `fetch=shallow` is required; `filter` is NOT advertised.
+ * Constant (no repo dependence) — built once, shared by every request.
+ */
+const ADVERTISEMENT_V2: Buffer = encodePktLines([
+  'version 2\n',
+  `agent=${AGENT}\n`,
+  'ls-refs=unborn\n',
+  'fetch=shallow\n',
+  'object-format=sha1\n',
+  'flush',
+]);
+
 export function advertisementV2(): Buffer {
-  return encodePktLines([
-    'version 2\n',
-    `agent=${AGENT}\n`,
-    'ls-refs=unborn\n',
-    'fetch=shallow\n',
-    'object-format=sha1\n',
-    'flush',
-  ]);
+  return ADVERTISEMENT_V2;
 }
 
 /** The v0 ref advertisement (answered when the client sends no Git-Protocol header). */
@@ -217,8 +222,16 @@ function wantedRefs(repo: Repo, wants: readonly string[]): Array<{ oid: string; 
   return out;
 }
 
+/** The full-response cache key: the fetch args + the repo state the response reads. */
+function fetchResponseCacheKey(repo: Repo, version: 'v2' | 'v0', args: FetchArgs): string {
+  return `${version}|${packCacheKey(args)}|${repo.refsVersion}|${repo.objects.size}`;
+}
+
 /** Build the v2 fetch response body for a parsed request. */
 export function handleFetchV2(repo: Repo, args: FetchArgs): Buffer {
+  const cacheKey = fetchResponseCacheKey(repo, 'v2', args);
+  const cached = repo.fetchResponseCache.get(cacheKey);
+  if (cached) return cached;
   const plan = planFetch(repo, args);
   const pack = packFor(repo, args, plan);
   const parts: Buffer[] = [];
@@ -255,11 +268,16 @@ export function handleFetchV2(repo: Repo, args: FetchArgs): Buffer {
   parts.push(encodePktLine('packfile\n'));
   for (const packet of sidebandPack(pack)) parts.push(packet);
   parts.push(encodePktLines(['flush']));
-  return Buffer.concat(parts);
+  const response = Buffer.concat(parts);
+  repo.fetchResponseCache.set(cacheKey, response);
+  return response;
 }
 
 /** Build the v0 fetch response body: NAK/ACK + shallow lines, then the sideband pack. */
 export function handleFetchV0(repo: Repo, args: FetchArgs): Buffer {
+  const cacheKey = fetchResponseCacheKey(repo, 'v0', args);
+  const cached = repo.fetchResponseCache.get(cacheKey);
+  if (cached) return cached;
   const plan = planFetch(repo, args);
   const pack = packFor(repo, args, plan);
   const lines: Array<string | 'flush'> = [];
@@ -273,7 +291,9 @@ export function handleFetchV0(repo: Repo, args: FetchArgs): Buffer {
   const parts: Buffer[] = [encodePktLines(lines)];
   for (const packet of sidebandPack(pack)) parts.push(packet);
   parts.push(encodePktLines(['flush']));
-  return Buffer.concat(parts);
+  const response = Buffer.concat(parts);
+  repo.fetchResponseCache.set(cacheKey, response);
+  return response;
 }
 
 interface LsRefsArgs {
@@ -302,6 +322,9 @@ function parseLsRefsArgs(lines: string[]): LsRefsArgs {
  * clone-empty check forbids refs-named entries there). Prefixes filter server-side, HEAD included.
  */
 export function handleLsRefs(repo: Repo, args: LsRefsArgs): Buffer {
+  const cacheKey = `lsrefs|${repo.refsVersion}|${repo.objects.size}|${args.peel ? 1 : 0}|${args.symrefs ? 1 : 0}|${args.unborn ? 1 : 0}|${args.prefixes.join(',')}`;
+  const cached = repo.lsRefsCache.get(cacheKey);
+  if (cached) return cached;
   const keep = (name: string): boolean =>
     args.prefixes.length === 0 || args.prefixes.some((prefix) => name.startsWith(prefix));
   const lines: string[] = [];
@@ -320,7 +343,9 @@ export function handleLsRefs(repo: Repo, args: LsRefsArgs): Buffer {
     if (args.peel && ref.peeled !== undefined) line += ` peeled:${ref.peeled}`;
     lines.push(`${line}\n`);
   }
-  return encodePktLines([...lines, 'flush']);
+  const response = encodePktLines([...lines, 'flush']);
+  repo.lsRefsCache.set(cacheKey, response);
+  return response;
 }
 
 /**

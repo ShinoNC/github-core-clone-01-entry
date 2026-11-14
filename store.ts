@@ -130,6 +130,16 @@ export interface Repo {
   refsVersion: number;
   /** Built packs, keyed by (tip, depth, haves) — the clone workload hits one entry 50 times. */
   readonly packCache: Map<string, Buffer>;
+  /**
+   * Whole fetch responses (v2/v0), keyed by (wants, haves, shallow, depth, version, refsVersion,
+   * objects.size). The clone workload's 50 identical fetches share one entry; objects.size is
+   * a valid store version because objects are only ever added, never removed.
+   */
+  readonly fetchResponseCache: Map<string, Buffer>;
+  /** v2 ls-refs responses, keyed by (args, refsVersion, objects.size). */
+  readonly lsRefsCache: Map<string, Buffer>;
+  /** v0 ref advertisements, keyed by (service, refsVersion, objects.size). */
+  readonly advertisementCache: Map<string, Buffer>;
   /** REST resources (Phase 2+); the maps live here so every surface shares one store. */
   readonly issues: Map<number, Issue>;
   issueCounter: number;
@@ -160,6 +170,9 @@ function newRepo(name: string, owner: string, options: { description?: string; p
     refs: new Map(),
     refsVersion: 0,
     packCache: new Map(),
+    fetchResponseCache: new Map(),
+    lsRefsCache: new Map(),
+    advertisementCache: new Map(),
     issues: new Map(),
     issueCounter: 0,
     pulls: new Map(),
