@@ -115,17 +115,36 @@ function parseUrl(req: IncomingMessage): { path: string; query: URLSearchParams 
   }
 }
 
-/** Read the whole request body as bytes. */
-async function readBody(req: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of req) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
-    total += buffer.length;
-    if (total > MAX_BODY_BYTES) throw new Error('request body exceeds the size limit');
-    chunks.push(buffer);
-  }
-  return Buffer.concat(chunks);
+/**
+ * Read the whole request body as bytes. Event-based (not `for await`, whose async-iterator
+ * machinery costs ~10-20µs per request) — every POST workload (push, clone, write) pays it.
+ */
+function readBody(req: IncomingMessage): Promise<Buffer> {
+  return new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let settled = false;
+    const fail = (err: Error): void => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+    req.on('data', (chunk: Buffer | string) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+      total += buffer.length;
+      if (total > MAX_BODY_BYTES) {
+        fail(new Error('request body exceeds the size limit'));
+        return;
+      }
+      chunks.push(buffer);
+    });
+    req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks));
+    });
+    req.on('error', fail);
+  });
 }
 
 /** Parse a JSON body; an empty body is {} and malformed JSON is an error. */
@@ -155,8 +174,13 @@ const GIT_PATH = /^\/([^/]+)\/([^/]+)\.git\/(info\/refs|git-upload-pack|git-rece
 /** The installed version GET /api/v3/meta reports. */
 const INSTALLED_VERSION = '1.0.0';
 
-/** Decode one path segment; a malformed escape is null (the caller answers 400). */
+/**
+ * Decode one path segment; a malformed escape is null (the caller answers 400).
+ * Fast path: a segment with no '%' is already decoded (decodeURIComponent is ~0.5µs
+ * per call and the router decodes every segment of every REST request).
+ */
 function decodeSegment(segment: string): string | null {
+  if (!segment.includes('%')) return segment;
   try {
     return decodeURIComponent(segment);
   } catch {
