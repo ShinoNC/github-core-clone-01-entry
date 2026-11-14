@@ -193,6 +193,14 @@ export function getRepo(owner: string, name: string): Repo | undefined {
   return repos.get(repoKey(owner, name));
 }
 
+/** Look up a repository by its numeric database id (GraphQL global ids decode to it). */
+export function getRepoById(id: number): Repo | undefined {
+  for (const repo of repos.values()) {
+    if (repo.id === id) return repo;
+  }
+  return undefined;
+}
+
 /** Delete a repository. Returns false when it did not exist. */
 export function deleteRepo(owner: string, name: string): boolean {
   return repos.delete(repoKey(owner, name));

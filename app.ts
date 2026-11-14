@@ -1,5 +1,5 @@
-// The HTTP server: one router for git smart HTTP, REST v3 (GraphQL v4 and MCP join in later
-// phases). Every handler is wrapped so a malformed request can never crash the process
+// The HTTP server: one router for git smart HTTP, REST v3, and GraphQL v4 (MCP joins in a
+// later phase). Every handler is wrapped so a malformed request can never crash the process
 // (repo-survives-errors), every response carries a deterministic X-GitHub-Request-Id, and every
 // error body is JSON {message: string}.
 //
@@ -52,6 +52,7 @@ import {
   patchIssue,
 } from './rest/issues.ts';
 import { createPull, getPull, listPullFiles, listPulls, mergePull } from './rest/pulls.ts';
+import { handleGraphQL } from './graphql/executor.ts';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 /** The largest request body accepted (packs in the suite are far below this). */
@@ -235,6 +236,28 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   const gitMatch = GIT_PATH.exec(path);
   if (gitMatch) {
     await handleGit(req, res, gitMatch[1]!, gitMatch[2]!, gitMatch[3]!, query);
+    return;
+  }
+
+  // GraphQL v4: POST /api/graphql, auth-gated like REST. GraphQL-level failures ride in
+  // the errors array (HTTP 200); only auth (401) and a malformed JSON body (400) are HTTP
+  // errors. A JSON array body is operation batching, answered as an array in order.
+  if (path === '/api/graphql') {
+    if (method !== 'POST') {
+      sendJson(res, 405, { message: 'Method Not Allowed' });
+      return;
+    }
+    if (!isAuthorized(req)) {
+      sendJson(res, 401, { message: 'Bad credentials' });
+      return;
+    }
+    const body = await readJsonBody(req);
+    if (!body.ok) {
+      sendJson(res, 400, { message: 'malformed JSON body' });
+      return;
+    }
+    const result = handleGraphQL(body.value);
+    sendJson(res, result.status, result.body);
     return;
   }
 

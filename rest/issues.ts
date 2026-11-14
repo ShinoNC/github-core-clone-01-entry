@@ -100,6 +100,63 @@ export function listLabels(repo: Repo): RestResult {
   return { status: 200, body: [...repo.labels.values()].map(labelJson) };
 }
 
+// -------------------------------------------------------------------------------------------
+// Core issue operations (shared by REST, GraphQL, MCP — one store, four surfaces).
+// -------------------------------------------------------------------------------------------
+
+/** Create an open issue; the number comes from the shared issue/PR sequence. */
+export function createIssueRecord(repo: Repo, title: string, body: string): Issue {
+  repo.numberCounter += 1;
+  const now = nextTimestamp();
+  const issue: Issue = {
+    number: repo.numberCounter,
+    title,
+    body,
+    state: 'open',
+    labels: [],
+    comments: [],
+    userLogin: VIEWER_LOGIN,
+    createdAt: now,
+    updatedAt: now,
+    closedAt: null,
+  };
+  repo.issues.set(issue.number, issue);
+  return issue;
+}
+
+/** Close an issue (null when it does not exist). Closing an already-closed issue is a no-op. */
+export function closeIssueRecord(repo: Repo, number: number): Issue | null {
+  const issue = repo.issues.get(number);
+  if (!issue) return null;
+  if (issue.state !== 'closed') {
+    issue.state = 'closed';
+    issue.closedAt = nextTimestamp();
+  }
+  issue.updatedAt = nextTimestamp();
+  return issue;
+}
+
+/** Add a comment to an issue (null when the issue does not exist). */
+export function addCommentRecord(repo: Repo, number: number, body: string): IssueComment | null {
+  const issue = repo.issues.get(number);
+  if (!issue) return null;
+  repo.commentCounter += 1;
+  const now = nextTimestamp();
+  const comment: IssueComment = {
+    id: repo.commentCounter,
+    body,
+    userLogin: VIEWER_LOGIN,
+    createdAt: now,
+    updatedAt: now,
+  };
+  issue.comments.push(comment);
+  return comment;
+}
+
+// -------------------------------------------------------------------------------------------
+// REST handlers
+// -------------------------------------------------------------------------------------------
+
 /** POST /api/v3/repos/{o}/{r}/issues (201; an unknown label is 422). */
 export function createIssue(repo: Repo, body: unknown): RestResult {
   const input = (body ?? {}) as Record<string, unknown>;
@@ -118,21 +175,8 @@ export function createIssue(repo: Repo, body: unknown): RestResult {
     }
     if (!labels.includes(name)) labels.push(name);
   }
-  repo.numberCounter += 1;
-  const now = nextTimestamp();
-  const issue: Issue = {
-    number: repo.numberCounter,
-    title,
-    body: bodyText,
-    state: 'open',
-    labels,
-    comments: [],
-    userLogin: VIEWER_LOGIN,
-    createdAt: now,
-    updatedAt: now,
-    closedAt: null,
-  };
-  repo.issues.set(issue.number, issue);
+  const issue = createIssueRecord(repo, title, bodyText);
+  issue.labels = labels;
   return { status: 201, body: issueJson(issue, repo) };
 }
 
@@ -215,16 +259,8 @@ export function createComment(repo: Repo, number: number, body: unknown): RestRe
   if (typeof text !== 'string' || text === '') {
     return { status: 422, body: { message: 'body is required' } };
   }
-  repo.commentCounter += 1;
-  const now = nextTimestamp();
-  const comment: IssueComment = {
-    id: repo.commentCounter,
-    body: text,
-    userLogin: VIEWER_LOGIN,
-    createdAt: now,
-    updatedAt: now,
-  };
-  issue.comments.push(comment);
+  const comment = addCommentRecord(repo, number, text);
+  if (!comment) return notFound();
   return { status: 201, body: commentJson(comment, repo, number) };
 }
 
