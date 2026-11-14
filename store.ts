@@ -85,6 +85,13 @@ export interface Issue {
   readonly createdAt: string;
   updatedAt: string;
   closedAt: string | null;
+  /**
+   * The cached serialized issue JSON (with trailing newline) for GET /issues/{n}.
+   * Every mutation of this issue (patch, close, comment) must reset it to null — the
+   * serializer reads only this issue's fields plus repo id/name (immutable) and label
+   * details (labels are immutable once created), so the cache is exact while set.
+   */
+  jsonCache: string | null;
 }
 
 export interface PullRequest {

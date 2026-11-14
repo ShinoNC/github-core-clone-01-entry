@@ -119,6 +119,7 @@ export function createIssueRecord(repo: Repo, title: string, body: string): Issu
     createdAt: now,
     updatedAt: now,
     closedAt: null,
+    jsonCache: null,
   };
   repo.issues.set(issue.number, issue);
   return issue;
@@ -133,6 +134,7 @@ export function closeIssueRecord(repo: Repo, number: number): Issue | null {
     issue.closedAt = nextTimestamp();
   }
   issue.updatedAt = nextTimestamp();
+  issue.jsonCache = null;
   return issue;
 }
 
@@ -150,6 +152,7 @@ export function addCommentRecord(repo: Repo, number: number, body: string): Issu
     updatedAt: now,
   };
   issue.comments.push(comment);
+  issue.jsonCache = null; // the `comments` count in the serialized issue changed
   return comment;
 }
 
@@ -216,17 +219,35 @@ export function listIssues(repo: Repo, query: URLSearchParams, baseUrl: string):
   return { status: 200, body: slice.map((issue) => issueJson(issue, repo)), headers };
 }
 
+/**
+ * The serialized issue JSON (with trailing newline), cached on the issue. The read workload
+ * GETs one issue 2,000 times; the first read builds and caches the string, the rest are a
+ * Map lookup + a res.end. Every mutation path resets the cache (see closeIssueRecord,
+ * addCommentRecord, patchIssue), and the serializer reads only this issue's fields plus
+ * immutable repo/label data — so a cached string is always exact.
+ */
+export function issueJsonText(issue: Issue, repo: Repo): string {
+  const cached = issue.jsonCache;
+  if (cached !== null) return cached;
+  const text = `${JSON.stringify(issueJson(issue, repo))}\n`;
+  issue.jsonCache = text;
+  return text;
+}
+
 /** GET /api/v3/repos/{o}/{r}/issues/{n}. */
 export function getIssue(repo: Repo, number: number): RestResult {
   const issue = repo.issues.get(number);
   if (!issue) return notFound();
-  return { status: 200, body: issueJson(issue, repo) };
+  // `body` is intentionally unset: sendRest sends `text` verbatim and never touches `body`,
+  // so building the object here would be pure waste. (getIssue's only caller is the router.)
+  return { status: 200, body: undefined, text: issueJsonText(issue, repo) };
 }
 
 /** PATCH /api/v3/repos/{o}/{r}/issues/{n}: state, title, body, labels (unknown label is 422). */
 export function patchIssue(repo: Repo, number: number, body: unknown): RestResult {
   const issue = repo.issues.get(number);
   if (!issue) return notFound();
+  issue.jsonCache = null; // any field may change below, including updatedAt
   const input = (body ?? {}) as Record<string, unknown>;
   if (typeof input.title === 'string') issue.title = input.title;
   if (typeof input.body === 'string') issue.body = input.body;

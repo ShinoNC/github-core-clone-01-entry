@@ -31,44 +31,59 @@ export interface RestResult {
   status: number;
   body: unknown;
   headers?: Record<string, string>;
+  /**
+   * A pre-serialized JSON body (with its trailing newline), when the handler cached one.
+   * sendRest sends it verbatim instead of stringifying `body` — the read workload hits the
+   * same issue 2,000 times, so skipping the rebuild + stringify per read is a real win.
+   * `body` is still set (for callers that read it); `text` is the wire form of the same value.
+   */
+  text?: string;
 }
 
 /** The token's user, as GET /api/v3/user returns it (login/id/name/email are asserted). */
+/**
+ * The viewer user object, built once. Every field is a fixed constant (the viewer never
+ * changes within a trial), and no caller mutates the returned object — it is only embedded
+ * in response bodies and stringified. Building it per call (30+ fields, ~15 template
+ * literals) was pure waste on the read/write hot paths.
+ */
+const USER_JSON: Record<string, unknown> = {
+  login: VIEWER_LOGIN,
+  id: VIEWER_ID,
+  node_id: `U_${VIEWER_ID}`,
+  avatar_url: `https://avatars.githubusercontent.com/u/${VIEWER_ID}?v=4`,
+  gravatar_id: '',
+  url: `/api/v3/users/${VIEWER_LOGIN}`,
+  html_url: `https://github.com/${VIEWER_LOGIN}`,
+  followers_url: `/api/v3/users/${VIEWER_LOGIN}/followers`,
+  following_url: `/api/v3/users/${VIEWER_LOGIN}/following{/other_user}`,
+  gists_url: `/api/v3/users/${VIEWER_LOGIN}/gists{/gist_id}`,
+  starred_url: `/api/v3/users/${VIEWER_LOGIN}/starred{/owner}{/repo}`,
+  subscriptions_url: `/api/v3/users/${VIEWER_LOGIN}/subscriptions`,
+  organizations_url: `/api/v3/users/${VIEWER_LOGIN}/orgs`,
+  repos_url: `/api/v3/users/${VIEWER_LOGIN}/repos`,
+  events_url: `/api/v3/users/${VIEWER_LOGIN}/events{/privacy}`,
+  received_events_url: `/api/v3/users/${VIEWER_LOGIN}/received_events`,
+  type: 'User',
+  site_admin: false,
+  name: VIEWER_NAME,
+  company: null,
+  blog: '',
+  location: null,
+  email: VIEWER_EMAIL,
+  hireable: null,
+  bio: null,
+  twitter_username: null,
+  public_repos: 0,
+  public_gists: 0,
+  followers: 0,
+  following: 0,
+  created_at: '2025-01-01T00:00:00Z',
+  updated_at: '2025-01-01T00:00:00Z',
+};
+
 export function userJson(): Record<string, unknown> {
-  return {
-    login: VIEWER_LOGIN,
-    id: VIEWER_ID,
-    node_id: `U_${VIEWER_ID}`,
-    avatar_url: `https://avatars.githubusercontent.com/u/${VIEWER_ID}?v=4`,
-    gravatar_id: '',
-    url: `/api/v3/users/${VIEWER_LOGIN}`,
-    html_url: `https://github.com/${VIEWER_LOGIN}`,
-    followers_url: `/api/v3/users/${VIEWER_LOGIN}/followers`,
-    following_url: `/api/v3/users/${VIEWER_LOGIN}/following{/other_user}`,
-    gists_url: `/api/v3/users/${VIEWER_LOGIN}/gists{/gist_id}`,
-    starred_url: `/api/v3/users/${VIEWER_LOGIN}/starred{/owner}{/repo}`,
-    subscriptions_url: `/api/v3/users/${VIEWER_LOGIN}/subscriptions`,
-    organizations_url: `/api/v3/users/${VIEWER_LOGIN}/orgs`,
-    repos_url: `/api/v3/users/${VIEWER_LOGIN}/repos`,
-    events_url: `/api/v3/users/${VIEWER_LOGIN}/events{/privacy}`,
-    received_events_url: `/api/v3/users/${VIEWER_LOGIN}/received_events`,
-    type: 'User',
-    site_admin: false,
-    name: VIEWER_NAME,
-    company: null,
-    blog: '',
-    location: null,
-    email: VIEWER_EMAIL,
-    hireable: null,
-    bio: null,
-    twitter_username: null,
-    public_repos: 0,
-    public_gists: 0,
-    followers: 0,
-    following: 0,
-    created_at: '2025-01-01T00:00:00Z',
-    updated_at: '2025-01-01T00:00:00Z',
-  };
+  return USER_JSON;
 }
 
 /** The full GitHub repository shape. */

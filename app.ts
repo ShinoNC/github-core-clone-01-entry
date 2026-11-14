@@ -76,6 +76,17 @@ function sendJson(res: ServerResponse, status: number, body: unknown, headers: R
   res.end(text);
 }
 
+/** Answer with a pre-serialized JSON body (a cached string, trailing newline included). */
+function sendJsonText(res: ServerResponse, status: number, text: string, headers: Readonly<Record<string, string>> = {}): void {
+  res.writeHead(status, {
+    'content-type': JSON_TYPE,
+    'content-length': Buffer.byteLength(text),
+    'x-github-request-id': nextRequestId(),
+    ...headers,
+  });
+  res.end(text);
+}
+
 /** Answer with raw bytes (git responses). */
 function sendBytes(res: ServerResponse, status: number, body: Buffer, contentType: string): void {
   res.writeHead(status, {
@@ -87,6 +98,10 @@ function sendBytes(res: ServerResponse, status: number, body: Buffer, contentTyp
 }
 
 function sendRest(res: ServerResponse, result: RestResult): void {
+  if (result.text !== undefined) {
+    sendJsonText(res, result.status, result.text, result.headers ?? {});
+    return;
+  }
   sendJson(res, result.status, result.body, result.headers ?? {});
 }
 
@@ -119,17 +134,20 @@ function parseJsonBody(body: Buffer): unknown {
   return JSON.parse(body.toString('utf8')) as unknown;
 }
 
+/** The expected bearer token, read once at startup — process.env access per request is slow. */
+const EXPECTED_TOKEN = (process.env.MAKEFUN_SHOP_TOKEN ?? '').trim();
+
 /**
  * The bearer check for /api/v3/*. With no token configured (local development only) any bearer
  * token is accepted — but a request with no token at all is always 401.
  */
 function isAuthorized(req: IncomingMessage): boolean {
   const header = req.headers.authorization ?? '';
-  const match = /^Bearer (.+)$/.exec(header);
-  if (!match) return false;
-  const expected = (process.env.MAKEFUN_SHOP_TOKEN ?? '').trim();
-  if (expected === '') return true;
-  return match[1] === expected;
+  if (!header.startsWith('Bearer ')) return false;
+  const token = header.slice(7);
+  if (token === '') return false;
+  if (EXPECTED_TOKEN === '') return true;
+  return token === EXPECTED_TOKEN;
 }
 
 const GIT_PATH = /^\/([^/]+)\/([^/]+)\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/;
