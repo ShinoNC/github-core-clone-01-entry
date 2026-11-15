@@ -105,10 +105,26 @@ function sendRest(res: ServerResponse, result: RestResult): void {
   sendJson(res, result.status, result.body, result.headers ?? {});
 }
 
-/** The path and query of a request URL (never throws). */
+/**
+ * The path and query of a request URL (never throws). Fast path: a clean path-only URL
+ * (no query, fragment, dot segment, space, or backslash) is the raw string — `new URL`
+ * costs ~5µs and every request pays it. Anything unusual falls back to `new URL`, which
+ * keeps the exact current behavior for malformed input (normalization, 400 on garbage).
+ */
 function parseUrl(req: IncomingMessage): { path: string; query: URLSearchParams } {
+  const raw = req.url ?? '/';
+  if (
+    raw.charCodeAt(0) === 47 && // '/'
+    raw.indexOf('?') < 0 &&
+    raw.indexOf('#') < 0 &&
+    raw.indexOf('/.') < 0 &&
+    raw.indexOf(' ') < 0 &&
+    raw.indexOf('\\') < 0
+  ) {
+    return { path: raw, query: new URLSearchParams() };
+  }
   try {
-    const url = new URL(req.url ?? '/', 'http://entry');
+    const url = new URL(raw, 'http://entry');
     return { path: url.pathname, query: url.searchParams };
   } catch {
     return { path: '/', query: new URLSearchParams() };
@@ -340,15 +356,23 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendJson(res, 401, { message: 'Bad credentials' });
       return;
     }
-    const rawSegments = path.split('/').filter((segment) => segment !== '');
+    // Split + filter + decode in one pass (no intermediate arrays): segments are the
+    // '/'-separated parts, empty parts dropped, each %-decoded. Identical to the old
+    // split('/').filter().map(decode) — a malformed encoding is still a 400.
     const segments: string[] = [];
-    for (const segment of rawSegments) {
-      const decoded = decodeSegment(segment);
-      if (decoded === null) {
-        sendJson(res, 400, { message: 'malformed path encoding' });
-        return;
+    let start = 0;
+    for (let index = 0; index <= path.length; index += 1) {
+      if (index === path.length || path.charCodeAt(index) === 47) {
+        if (index > start) {
+          const decoded = decodeSegment(path.slice(start, index));
+          if (decoded === null) {
+            sendJson(res, 400, { message: 'malformed path encoding' });
+            return;
+          }
+          segments.push(decoded);
+        }
+        start = index + 1;
       }
-      segments.push(decoded);
     }
     // segments[0..1] are 'api' and 'v3' (path is under /api/v3).
     const tail = segments.slice(2);

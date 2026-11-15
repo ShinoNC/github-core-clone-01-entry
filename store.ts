@@ -54,10 +54,10 @@ export function trialNowIso(): string {
 /** A global monotonic counter for X-GitHub-Request-Id (non-empty is all the suite requires). */
 let requestCounter = 0;
 
-/** The next deterministic request id. */
+/** The next deterministic request id (decimal, no padding — non-empty is all the suite requires). */
 export function nextRequestId(): string {
   requestCounter += 1;
-  return `req-${requestCounter.toString(16).padStart(8, '0')}`;
+  return `req-${requestCounter}`;
 }
 
 export interface Label {

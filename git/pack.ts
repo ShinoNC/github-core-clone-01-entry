@@ -122,14 +122,26 @@ export interface PackObjectInput {
  * Build a packfile from plain objects (no deltas). Objects are deduplicated by id and sorted by id,
  * so the same object set always produces the same bytes (deterministic responses, cacheable packs).
  * The trailer is SHA-1 over everything before it.
+ *
+ * When `oids` is given (parallel to `objects`, same order and length) the caller guarantees the
+ * objects are already unique and the ids are correct, so the SHA-1 hash + dedup pass is skipped
+ * — the pack bytes are identical to the hashed path (same object set, same id sort).
  */
-export function writePack(objects: Iterable<PackObjectInput>): Buffer {
-  const byOid = new Map<string, PackObjectInput>();
-  for (const object of objects) {
-    const oid = hashObject(object.type, object.data);
-    if (!byOid.has(oid)) byOid.set(oid, object);
+export function writePack(objects: readonly PackObjectInput[], oids?: readonly string[]): Buffer {
+  const entries: Array<[string, PackObjectInput]> = [];
+  if (oids !== undefined && oids.length === objects.length) {
+    for (let index = 0; index < objects.length; index += 1) {
+      entries.push([oids[index]!, objects[index]!]);
+    }
+  } else {
+    const byOid = new Map<string, PackObjectInput>();
+    for (const object of objects) {
+      const oid = hashObject(object.type, object.data);
+      if (!byOid.has(oid)) byOid.set(oid, object);
+    }
+    entries.push(...byOid.entries());
   }
-  const list = [...byOid.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, object]) => object);
+  const list = entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, object]) => object);
   const parts: Buffer[] = [];
   const header = Buffer.allocUnsafe(12);
   header.write('PACK', 0, 4, 'ascii');

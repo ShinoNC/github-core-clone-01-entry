@@ -18,9 +18,11 @@
 //   5. Close the server and exit 0. The harness then stops the env, which writes the export the scorer
 //      reads.
 //
-// main.ts imports its own server and nothing else: no package, no Node built-in, no model call.
+// main.ts imports its own server and the JIT warm-up, and nothing else: no package,
+// no Node built-in, no model call.
 
 import { createApp } from './app.ts';
+import { warmUp } from './warmup.ts';
 
 const ENV_URL = (process.env.MAKEFUN_ENV_URL ?? '').replace(/\/+$/, '');
 if (ENV_URL === '') {
@@ -90,6 +92,12 @@ async function main(): Promise<void> {
   const address = server.address();
   if (address === null || typeof address === 'string') throw new Error('the server did not bind an ephemeral TCP port');
   process.stdout.write(`[entry] listening on port ${address.port}\n`);
+
+  // Warm the JIT before registering: the suite's first request must meet optimized code.
+  // The warm-up runs synthetic ops through every hot path on a throwaway repo, then deletes
+  // it; it never throws, and it takes ~1 s of the 20 s boot budget.
+  await warmUp(address.port);
+  process.stdout.write('[entry] warm-up done\n');
 
   await register(address.port);
   process.stdout.write('[entry] registered; waiting for the env to say done\n');

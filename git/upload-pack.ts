@@ -15,6 +15,7 @@ import {
   collectReachable,
   isAncestor,
   isObjectId,
+  parseCommit,
   parseTag,
   walkWithDepth,
   type GitObject,
@@ -84,6 +85,8 @@ function parseFetchArgs(lines: string[]): FetchArgs {
 interface FetchPlan {
   /** Objects to send, deduplicated. */
   objects: GitObject[];
+  /** The id of each object, parallel to `objects` (same order) — lets writePack skip hashing. */
+  oids: string[];
   /** The new shallow boundary. */
   shallow: string[];
   /** Old shallow commits now fully included. */
@@ -101,6 +104,28 @@ export function planFetch(repo: Repo, args: FetchArgs): FetchPlan {
   const lookup = (oid: string): GitObject | undefined => repo.objects.get(oid);
   const wants = [...new Set(args.wants.filter((oid) => isObjectId(oid) && oid !== ZERO_OID))];
   const haves = [...new Set(args.haves.filter((oid) => isObjectId(oid) && oid !== ZERO_OID))];
+
+  // Fast path: a depth-1 fetch of a single commit, no haves, no client shallow set — the
+  // clone workload's shape. The answer is the tip commit plus its full tree subtree; no
+  // reachability analysis, no ACKs, no unshallow. The result is identical to the general
+  // path for this shape (same object set, same shallow boundary); anything else falls
+  // through to the general path below.
+  if (haves.length === 0 && args.depth === 1 && args.shallow.length === 0 && wants.length === 1) {
+    const tip = lookup(wants[0]!);
+    if (tip && tip.type === 'commit') {
+      const treeObjects = collectReachable([parseCommit(tip.data).tree], lookup, { allowMissing: true });
+      const objects: GitObject[] = [tip];
+      const oids: string[] = [wants[0]!];
+      for (const oid of treeObjects) {
+        const object = lookup(oid);
+        if (object) {
+          objects.push(object);
+          oids.push(oid);
+        }
+      }
+      return { objects, oids, shallow: [wants[0]!], unshallow: [], acks: [] };
+    }
+  }
 
   // Tag wants contribute their tag object plus their peeled commit as a walk root; tree/blob
   // wants are included directly; commit wants are walk roots.
@@ -152,9 +177,13 @@ export function planFetch(repo: Repo, args: FetchArgs): FetchPlan {
   }
 
   const objects: GitObject[] = [];
+  const oids: string[] = [];
   for (const oid of send) {
     const object = lookup(oid);
-    if (object) objects.push(object);
+    if (object) {
+      objects.push(object);
+      oids.push(oid);
+    }
   }
 
   // Shallow: the walk's boundary. Unshallow: the client's old boundary commits that are now in
@@ -180,7 +209,7 @@ export function planFetch(repo: Repo, args: FetchArgs): FetchPlan {
       }
     }
   }
-  return { objects, shallow, unshallow, acks };
+  return { objects, oids, shallow, unshallow, acks };
 }
 
 /** The pack cache key for a fetch: wants + haves + the client's shallow set + depth determine the object set exactly. */
@@ -196,7 +225,7 @@ function packFor(repo: Repo, args: FetchArgs, plan: FetchPlan): Buffer {
   const key = packCacheKey(args);
   const cached = repo.packCache.get(key);
   if (cached) return cached;
-  const pack = writePack(plan.objects);
+  const pack = writePack(plan.objects, plan.oids);
   repo.packCache.set(key, pack);
   return pack;
 }
